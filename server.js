@@ -254,3 +254,85 @@ app.listen(PORT, () => {
     console.log(`PhotoShare server running on port ${PORT}`);
     console.log(`Access at: http://localhost:${PORT}`);
 });
+// ============================================
+// FILE: package.json
+// ============================================
+/*
+{
+  "name": "photoshare-webapp",
+  "version": "1.0.0",
+  "description": "PhotoShare Cloud Native Platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@azure/storage-blob": "^12.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
+*/
+
+// ============================================
+// FILE: web.config (for Azure Web App)
+// ============================================
+/*
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <handlers>
+      <add name="iisnode" path="server.js" verb="*" modules="iisnode"/>
+    </handlers>
+    <rewrite>
+      <rules>
+        <rule name="NodeInspector" patternSyntax="ECMAScript" stopProcessing="true">
+          <match url="^server.js\/debug[\/]?" />
+        </rule>
+        <rule name="StaticContent">
+          <action type="Rewrite" url="public{REQUEST_URI}"/>
+        </rule>
+        <rule name="DynamicContent">
+          <conditions>
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="True"/>
+          </conditions>
+          <action type="Rewrite" url="server.js"/>
+        </rule>
+      </rules>
+    </rewrite>
+    <security>
+      <requestFiltering>
+        <hiddenSegments>
+          <remove segment="bin"/>
+        </hiddenSegments>
+      </requestFiltering>
+    </security>
+    <httpErrors existingResponse="PassThrough" />
+  </system.webServer>
+</configuration>
+*/
+
+// ============================================
+// FILE: .deployment
+// ============================================
+/*
+[config]
+command = deploy.cmd
+*/
+
+// ============================================
+// FILE: deploy.cmd (Deployment Script)
+// ============================================
+/*
+@echo off
+echo Installing dependencies...
+call npm install --production
+echo Deployment complete!
+*/
