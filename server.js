@@ -10,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // Azure Blob Storage Configuration
-const STORAGE_ACCOUNT = process.env.STORAGE_ACCOUNT || "photoshare123";
+const STORAGE_ACCOUNT = process.env.STORAGE_ACCOUNT || "photosharestorage";
 const CONTAINER_NAME = "photos";
 const METADATA_CONTAINER = "metadata";
 const SAS_TOKEN = process.env.SAS_TOKEN || "sv=2024-11-04&ss=b&srt=co&sp=rwdctfx&se=2026-01-07T04:01:36Z&st=2026-01-06T19:46:36Z&spr=https&sig=JzbWbKVLzdBwWMmaZ6KeG2qRLRJui%2Ft8U1On3VPbqKU%3D";
@@ -254,6 +254,7 @@ app.listen(PORT, () => {
     console.log(`PhotoShare server running on port ${PORT}`);
     console.log(`Access at: http://localhost:${PORT}`);
 });
+
 // ============================================
 // FILE: package.json
 // ============================================
