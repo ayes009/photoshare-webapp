@@ -1,5 +1,5 @@
 {
-  "name": "photoshare-webapp",
+  "name": "photosharestorag",
   "version": "1.0.0",
   "description": "PhotoShare Cloud Native Platform",
   "main": "server.js",
