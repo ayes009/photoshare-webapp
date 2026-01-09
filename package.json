@@ -1,17 +1,21 @@
 {
-  "name": "photoshare-webapp",
+  "name": "photoshare-backend",
   "version": "1.0.0",
-  "description": "PhotoShare Cloud Native Platform",
+  "description": "PhotoShare Backend API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": "18.x"
-  },
   "dependencies": {
-    "express": "^4.18.2",
+    "@azure/storage-blob": "^12.17.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "@azure/storage-blob": "^12.17.0"
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
