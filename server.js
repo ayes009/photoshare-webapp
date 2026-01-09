@@ -1,285 +1,412 @@
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const { BlobServiceClient } = require('@azure/storage-blob');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from azure.storage.blob import BlobServiceClient, ContentSettings
+import json
+import base64
+import os
+from datetime import datetime
+import io
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+app = Flask(__name__, static_folder='static')
+CORS(app)
 
-const CONNECTION_STRING = "BlobEndpoint=https://photoshare123.blob.core.windows.net/;QueueEndpoint=https://photoshare123.queue.core.windows.net/;FileEndpoint=https://photoshare123.file.core.windows.net/;TableEndpoint=https://photoshare123.table.core.windows.net/;SharedAccessSignature=sv=2024-11-04&ss=b&srt=co&sp=rwdctfx&se=2026-01-07T04:01:36Z&st=2026-01-06T19:46:36Z&spr=https&sig=JzbWbKVLzdBwWMmaZ6KeG2qRLRJui%2Ft8U1On3VPbqKU%3D";
-const blobServiceClient = BlobServiceClient.fromConnectionString(CONNECTION_STRING);
+# Azure Blob Storage Configuration
+STORAGE_ACCOUNT = "photoshare123"
+CONTAINER_NAME = "photos"
+METADATA_CONTAINER = "metadata"
+SAS_TOKEN = "sv=2024-11-04&ss=b&srt=co&sp=rwdctfx&se=2026-01-07T04:01:36Z&st=2026-01-06T19:46:36Z&spr=https&sig=JzbWbKVLzdBwWMmaZ6KeG2qRLRJui%2Ft8U1On3VPbqKU%3D"
+BLOB_SERVICE_URL = f"https://{STORAGE_ACCOUNT}.blob.core.windows.net"
 
-const USERS_CONTAINER = 'users';
-const PHOTOS_CONTAINER = 'photos';
-const IMAGES_CONTAINER = 'images';
-const JWT_SECRET = 'photoshare-secret-key-2024';
+# Initialize Blob Service Client
+connection_string = f"{BLOB_SERVICE_URL}?{SAS_TOKEN}"
+blob_service_client = BlobServiceClient(account_url=BLOB_SERVICE_URL, credential=SAS_TOKEN)
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+# Serve frontend
+@app.route('/')
+def index():
+    return send_from_directory('static', 'index.html')
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage, limits: { fileSize: 10 * 1024 * 1024 } });
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory('static', path)
 
-async function ensureContainer(containerName) {
-  const containerClient = blobServiceClient.getContainerClient(containerName);
-  await containerClient.createIfNotExists({ access: 'blob' });
-  return containerClient;
-}
+# ============================================
+# API Routes
+# ============================================
 
-async function getBlobData(containerName, blobName) {
-  try {
-    const containerClient = blobServiceClient.getContainerClient(containerName);
-    const blobClient = containerClient.getBlobClient(blobName);
-    const downloadResponse = await blobClient.download();
-    const downloaded = await streamToBuffer(downloadResponse.readableStreamBody);
-    return JSON.parse(downloaded.toString());
-  } catch (error) {
-    if (error.statusCode === 404) return null;
-    throw error;
-  }
-}
-
-async function saveBlobData(containerName, blobName, data) {
-  const containerClient = await ensureContainer(containerName);
-  const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-  const content = JSON.stringify(data);
-  await blockBlobClient.upload(content, content.length, {
-    blobHTTPHeaders: { blobContentType: 'application/json' }
-  });
-}
-
-async function listAllBlobs(containerName) {
-  const containerClient = blobServiceClient.getContainerClient(containerName);
-  const blobs = [];
-  for await (const blob of containerClient.listBlobsFlat()) {
-    const data = await getBlobData(containerName, blob.name);
-    if (data) blobs.push(data);
-  }
-  return blobs;
-}
-
-async function deleteBlob(containerName, blobName) {
-  const containerClient = blobServiceClient.getContainerClient(containerName);
-  const blobClient = containerClient.getBlobClient(blobName);
-  await blobClient.delete();
-}
-
-async function streamToBuffer(readableStream) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    readableStream.on('data', (data) => {
-      chunks.push(data instanceof Buffer ? data : Buffer.from(data));
-    });
-    readableStream.on('end', () => resolve(Buffer.concat(chunks)));
-    readableStream.on('error', reject);
-  });
-}
-
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Access token required' });
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ error: 'Invalid token' });
-    req.user = user;
-    next();
-  });
-};
-
-async function initializeContainers() {
-  await ensureContainer(USERS_CONTAINER);
-  await ensureContainer(PHOTOS_CONTAINER);
-  await ensureContainer(IMAGES_CONTAINER);
-  console.log('Containers initialized');
-}
-
-app.post('/api/auth/signup', async (req, res) => {
-  try {
-    const { username, password, role } = req.body;
-    if (!username || !password || !role) {
-      return res.status(400).json({ error: 'All fields required' });
-    }
-    const existingUser = await getBlobData(USERS_CONTAINER, `${username}.json`);
-    if (existingUser) return res.status(400).json({ error: 'Username exists' });
+@app.route('/api/auth/login', methods=['POST', 'OPTIONS'])
+def login():
+    """Handle user login - Open access, no authentication required"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = {
-      id: uuidv4(),
-      username,
-      password: hashedPassword,
-      role,
-      createdAt: new Date().toISOString()
-    };
-    await saveBlobData(USERS_CONTAINER, `${username}.json`, user);
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.status(201).json({ token, user: { id: user.id, username: user.username, role: user.role } });
-  } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ error: 'Signup failed' });
-  }
-});
+    try:
+        data = request.get_json()
+        username = data.get('username', 'Guest')
+        role = data.get('role', 'consumer')
+        
+        # Validate role
+        if role not in ['creator', 'consumer']:
+            return jsonify({'error': 'Role must be either creator or consumer'}), 400
+        
+        # Create user session (no password validation for open access)
+        user = {
+            'id': str(int(datetime.now().timestamp() * 1000)),
+            'username': username,
+            'role': role,
+            'token': base64.b64encode(f"{username}:{datetime.now().timestamp()}".encode()).decode()
+        }
+        
+        app.logger.info(f"User {username} logged in as {role} (guest access)")
+        
+        return jsonify({
+            'user': user,
+            'message': 'Access granted - Welcome to PhotoShare!'
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Login error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { username, password, role } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Credentials required' });
+
+@app.route('/api/photos', methods=['GET', 'OPTIONS'])
+def get_photos():
+    """Get all photos from Azure Blob Storage"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    const user = await getBlobData(USERS_CONTAINER, `${username}.json`);
-    if (!user || user.role !== role) return res.status(401).json({ error: 'Invalid credentials' });
+    try:
+        photos = []
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        
+        try:
+            # List all metadata blobs
+            blob_list = metadata_container_client.list_blobs()
+            
+            for blob in blob_list:
+                if blob.name.endswith('.json'):
+                    try:
+                        blob_client = metadata_container_client.get_blob_client(blob.name)
+                        blob_data = blob_client.download_blob().readall()
+                        photo_data = json.loads(blob_data.decode('utf-8'))
+                        photos.append(photo_data)
+                    except Exception as blob_error:
+                        app.logger.error(f"Error reading blob {blob.name}: {str(blob_error)}")
+                        
+        except Exception as list_error:
+            app.logger.warning(f"No photos found or container does not exist: {str(list_error)}")
+        
+        # Sort by upload date (newest first)
+        photos.sort(key=lambda x: x.get('uploadedAt', ''), reverse=True)
+        
+        app.logger.info(f"Retrieved {len(photos)} photos")
+        return jsonify(photos), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error fetching photos: {str(e)}")
+        return jsonify({'error': 'Failed to fetch photos', 'details': str(e), 'photos': []}), 500
+
+
+@app.route('/api/photos', methods=['POST'])
+def upload_photo():
+    """Upload a new photo to Azure Blob Storage"""
+    try:
+        data = request.get_json()
+        
+        title = data.get('title')
+        caption = data.get('caption', '')
+        location = data.get('location', '')
+        tags = data.get('tags', '')
+        image_data = data.get('imageData')
+        file_name = data.get('fileName')
+        
+        # Validate required fields
+        if not title or not image_data or not file_name:
+            return jsonify({'error': 'Title, imageData, and fileName are required'}), 400
+        
+        # Extract username from auth header
+        auth_header = request.headers.get('Authorization', '')
+        username = 'Anonymous'
+        if auth_header:
+            try:
+                decoded_token = base64.b64decode(auth_header.replace('Bearer ', '')).decode()
+                username = decoded_token.split(':')[0]
+            except Exception:
+                app.logger.warning('Could not decode auth header')
+        
+        photo_id = str(int(datetime.now().timestamp() * 1000))
+        blob_name = f"{photo_id}-{file_name.replace(' ', '_')}"
+        
+        # Upload image to photos container
+        photo_container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        blob_client = photo_container_client.get_blob_client(blob_name)
+        
+        # Convert base64 to bytes
+        if ',' in image_data:
+            base64_data = image_data.split(',')[1]
+        else:
+            base64_data = image_data
+        
+        image_bytes = base64.b64decode(base64_data)
+        
+        # Determine content type
+        content_type = 'image/jpeg'
+        if file_name.lower().endswith('.png'):
+            content_type = 'image/png'
+        elif file_name.lower().endswith('.gif'):
+            content_type = 'image/gif'
+        elif file_name.lower().endswith('.webp'):
+            content_type = 'image/webp'
+        
+        # Upload the image
+        blob_client.upload_blob(
+            image_bytes,
+            content_settings=ContentSettings(content_type=content_type),
+            overwrite=True
+        )
+        
+        image_url = f"{BLOB_SERVICE_URL}/{CONTAINER_NAME}/{blob_name}?{SAS_TOKEN}"
+        
+        # Create photo metadata
+        photo = {
+            'id': photo_id,
+            'title': title,
+            'caption': caption,
+            'location': location,
+            'tags': tags,
+            'url': image_url,
+            'creatorName': username,
+            'likes': 0,
+            'comments': [],
+            'rating': 0,
+            'ratingCount': 0,
+            'uploadedAt': datetime.now().isoformat()
+        }
+        
+        # Save metadata to metadata container
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        metadata_blob_client = metadata_container_client.get_blob_client(f"{photo_id}.json")
+        
+        metadata_json = json.dumps(photo)
+        metadata_blob_client.upload_blob(
+            metadata_json.encode('utf-8'),
+            content_settings=ContentSettings(content_type='application/json'),
+            overwrite=True
+        )
+        
+        app.logger.info(f"Photo uploaded successfully: {photo_id}")
+        return jsonify(photo), 201
+        
+    except Exception as e:
+        app.logger.error(f"Error uploading photo: {str(e)}")
+        return jsonify({'error': 'Failed to upload photo', 'details': str(e)}), 500
+
+
+@app.route('/api/photos/<photo_id>', methods=['DELETE', 'OPTIONS'])
+def delete_photo(photo_id):
+    """Delete a photo from Azure Blob Storage"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
+    try:
+        if not photo_id:
+            return jsonify({'error': 'Photo ID is required'}), 400
+        
+        # Get metadata to find blob name
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        metadata_blob_client = metadata_container_client.get_blob_client(f"{photo_id}.json")
+        
+        # Check if photo exists
+        if not metadata_blob_client.exists():
+            return jsonify({'error': 'Photo not found'}), 404
+        
+        # Get photo metadata
+        blob_data = metadata_blob_client.download_blob().readall()
+        photo = json.loads(blob_data.decode('utf-8'))
+        
+        # Extract blob name from URL
+        url_parts = photo['url'].split('/')
+        blob_name_with_params = url_parts[-1]
+        blob_name = blob_name_with_params.split('?')[0]
+        
+        # Delete the image blob
+        photo_container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        image_blob_client = photo_container_client.get_blob_client(blob_name)
+        
+        try:
+            image_blob_client.delete_blob()
+        except Exception as delete_error:
+            app.logger.warning(f"Image blob deletion failed: {str(delete_error)}")
+        
+        # Delete metadata
+        metadata_blob_client.delete_blob()
+        
+        app.logger.info(f"Photo deleted successfully: {photo_id}")
+        return jsonify({'message': 'Photo deleted successfully', 'photoId': photo_id}), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error deleting photo: {str(e)}")
+        return jsonify({'error': 'Failed to delete photo', 'details': str(e)}), 500
+
+
+@app.route('/api/photos/<photo_id>/like', methods=['POST', 'OPTIONS'])
+def like_photo(photo_id):
+    """Like a photo"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
-  }
-});
+    try:
+        if not photo_id:
+            return jsonify({'error': 'Photo ID is required'}), 400
+        
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        metadata_blob_client = metadata_container_client.get_blob_client(f"{photo_id}.json")
+        
+        # Check if photo exists
+        if not metadata_blob_client.exists():
+            return jsonify({'error': 'Photo not found'}), 404
+        
+        # Get current metadata
+        blob_data = metadata_blob_client.download_blob().readall()
+        photo = json.loads(blob_data.decode('utf-8'))
+        
+        # Increment likes
+        photo['likes'] = photo.get('likes', 0) + 1
+        
+        # Update metadata
+        metadata_json = json.dumps(photo)
+        metadata_blob_client.upload_blob(
+            metadata_json.encode('utf-8'),
+            content_settings=ContentSettings(content_type='application/json'),
+            overwrite=True
+        )
+        
+        app.logger.info(f"Photo {photo_id} liked. Total likes: {photo['likes']}")
+        return jsonify({'success': True, 'likes': photo['likes']}), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error liking photo: {str(e)}")
+        return jsonify({'error': 'Failed to like photo', 'details': str(e)}), 500
 
-app.post('/api/photos', authenticateToken, upload.single('image'), async (req, res) => {
-  try {
-    const { title, caption, location, tags } = req.body;
-    const file = req.file;
-    if (!title) return res.status(400).json({ error: 'Title required' });
+
+@app.route('/api/photos/<photo_id>/rate', methods=['POST', 'OPTIONS'])
+def rate_photo(photo_id):
+    """Rate a photo"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    let imageUrl = '';
-    if (file) {
-      const photoId = uuidv4();
-      const blobName = `${photoId}-${file.originalname}`;
-      const containerClient = await ensureContainer(IMAGES_CONTAINER);
-      const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-      await blockBlobClient.upload(file.buffer, file.buffer.length, {
-        blobHTTPHeaders: { blobContentType: file.mimetype }
-      });
-      imageUrl = blockBlobClient.url;
-    } else if (req.body.imageUrl) {
-      imageUrl = req.body.imageUrl;
-    } else {
-      return res.status(400).json({ error: 'Image required' });
-    }
+    try:
+        if not photo_id:
+            return jsonify({'error': 'Photo ID is required'}), 400
+        
+        data = request.get_json()
+        rating = data.get('rating')
+        
+        if not rating or rating < 1 or rating > 5:
+            return jsonify({'error': 'Rating must be between 1 and 5'}), 400
+        
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        metadata_blob_client = metadata_container_client.get_blob_client(f"{photo_id}.json")
+        
+        # Check if photo exists
+        if not metadata_blob_client.exists():
+            return jsonify({'error': 'Photo not found'}), 404
+        
+        # Get current metadata
+        blob_data = metadata_blob_client.download_blob().readall()
+        photo = json.loads(blob_data.decode('utf-8'))
+        
+        # Calculate new rating
+        current_rating = photo.get('rating', 0)
+        current_count = photo.get('ratingCount', 0)
+        new_rating_count = current_count + 1
+        new_rating = ((current_rating * current_count) + rating) / new_rating_count
+        
+        photo['rating'] = new_rating
+        photo['ratingCount'] = new_rating_count
+        
+        # Update metadata
+        metadata_json = json.dumps(photo)
+        metadata_blob_client.upload_blob(
+            metadata_json.encode('utf-8'),
+            content_settings=ContentSettings(content_type='application/json'),
+            overwrite=True
+        )
+        
+        app.logger.info(f"Photo {photo_id} rated {rating}. New average: {new_rating:.2f}")
+        return jsonify({'success': True, 'rating': new_rating, 'ratingCount': new_rating_count}), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error rating photo: {str(e)}")
+        return jsonify({'error': 'Failed to rate photo', 'details': str(e)}), 500
+
+
+@app.route('/api/photos/<photo_id>/comments', methods=['POST', 'OPTIONS'])
+def add_comment(photo_id):
+    """Add a comment to a photo"""
+    if request.method == 'OPTIONS':
+        return '', 204
     
-    const photoId = uuidv4();
-    const photo = {
-      id: photoId,
-      url: imageUrl,
-      title,
-      caption: caption || '',
-      location: location || '',
-      tags: tags || '',
-      creatorId: req.user.id,
-      creatorName: req.user.username,
-      likes: 0,
-      likedBy: [],
-      comments: [],
-      rating: 0,
-      ratingCount: 0,
-      uploadedAt: new Date().toISOString()
-    };
-    await saveBlobData(PHOTOS_CONTAINER, `${photoId}.json`, photo);
-    res.status(201).json(photo);
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ error: 'Upload failed' });
-  }
-});
+    try:
+        if not photo_id:
+            return jsonify({'error': 'Photo ID is required'}), 400
+        
+        data = request.get_json()
+        comment_text = data.get('text')
+        
+        if not comment_text:
+            return jsonify({'error': 'Comment text is required'}), 400
+        
+        # Extract username from auth header
+        auth_header = request.headers.get('Authorization', '')
+        username = 'Anonymous'
+        if auth_header:
+            try:
+                decoded_token = base64.b64decode(auth_header.replace('Bearer ', '')).decode()
+                username = decoded_token.split(':')[0]
+            except Exception:
+                pass
+        
+        metadata_container_client = blob_service_client.get_container_client(METADATA_CONTAINER)
+        metadata_blob_client = metadata_container_client.get_blob_client(f"{photo_id}.json")
+        
+        # Check if photo exists
+        if not metadata_blob_client.exists():
+            return jsonify({'error': 'Photo not found'}), 404
+        
+        # Get current metadata
+        blob_data = metadata_blob_client.download_blob().readall()
+        photo = json.loads(blob_data.decode('utf-8'))
+        
+        # Create new comment
+        new_comment = {
+            'id': str(int(datetime.now().timestamp() * 1000)),
+            'userId': str(int(datetime.now().timestamp())),
+            'username': username,
+            'text': comment_text,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # Add comment to photo
+        if 'comments' not in photo:
+            photo['comments'] = []
+        photo['comments'].append(new_comment)
+        
+        # Update metadata
+        metadata_json = json.dumps(photo)
+        metadata_blob_client.upload_blob(
+            metadata_json.encode('utf-8'),
+            content_settings=ContentSettings(content_type='application/json'),
+            overwrite=True
+        )
+        
+        app.logger.info(f"Comment added to photo {photo_id}")
+        return jsonify(new_comment), 201
+        
+    except Exception as e:
+        app.logger.error(f"Error adding comment: {str(e)}")
+        return jsonify({'error': 'Failed to add comment', 'details': str(e)}), 500
 
-app.get('/api/photos', authenticateToken, async (req, res) => {
-  try {
-    const photos = await listAllBlobs(PHOTOS_CONTAINER);
-    photos.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-    res.json(photos);
-  } catch (error) {
-    console.error('Get photos error:', error);
-    res.status(500).json({ error: 'Failed to fetch photos' });
-  }
-});
 
-app.delete('/api/photos/:id', authenticateToken, async (req, res) => {
-  try {
-    const photo = await getBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`);
-    if (!photo) return res.status(404).json({ error: 'Photo not found' });
-    if (photo.creatorId !== req.user.id) return res.status(403).json({ error: 'Not authorized' });
-    await deleteBlob(PHOTOS_CONTAINER, `${req.params.id}.json`);
-    res.json({ message: 'Deleted successfully' });
-  } catch (error) {
-    console.error('Delete error:', error);
-    res.status(500).json({ error: 'Delete failed' });
-  }
-});
-
-app.post('/api/photos/:id/like', authenticateToken, async (req, res) => {
-  try {
-    const photo = await getBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`);
-    if (!photo) return res.status(404).json({ error: 'Photo not found' });
-    if (!photo.likedBy.includes(req.user.id)) {
-      photo.likedBy.push(req.user.id);
-      photo.likes += 1;
-      await saveBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`, photo);
-    }
-    res.json(photo);
-  } catch (error) {
-    console.error('Like error:', error);
-    res.status(500).json({ error: 'Like failed' });
-  }
-});
-
-app.post('/api/photos/:id/comment', authenticateToken, async (req, res) => {
-  try {
-    const { text } = req.body;
-    if (!text) return res.status(400).json({ error: 'Comment text required' });
-    const photo = await getBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`);
-    if (!photo) return res.status(404).json({ error: 'Photo not found' });
-    const comment = {
-      id: uuidv4(),
-      userId: req.user.id,
-      username: req.user.username,
-      text,
-      timestamp: new Date().toISOString()
-    };
-    photo.comments.push(comment);
-    await saveBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`, photo);
-    res.json(comment);
-  } catch (error) {
-    console.error('Comment error:', error);
-    res.status(500).json({ error: 'Comment failed' });
-  }
-});
-
-app.post('/api/photos/:id/rate', authenticateToken, async (req, res) => {
-  try {
-    const { rating } = req.body;
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: 'Rating must be 1-5' });
-    }
-    const photo = await getBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`);
-    if (!photo) return res.status(404).json({ error: 'Photo not found' });
-    const newRatingCount = photo.ratingCount + 1;
-    const newRating = ((photo.rating * photo.ratingCount) + rating) / newRatingCount;
-    photo.rating = newRating;
-    photo.ratingCount = newRatingCount;
-    await saveBlobData(PHOTOS_CONTAINER, `${req.params.id}.json`, photo);
-    res.json(photo);
-  } catch (error) {
-    console.error('Rate error:', error);
-    res.status(500).json({ error: 'Rate failed' });
-  }
-});
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-initializeContainers().then(() => {
-  app.listen(PORT, () => {
-    console.log(`PhotoShare API running on port ${PORT}`);
-  });
-}).catch(error => {
-  console.error('Failed to initialize:', error);
-  process.exit(1);
-});
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=8000)
