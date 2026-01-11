@@ -1,7 +1,7 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy Python app to Azure Web App - photosharestorag
+name: Build and deploy Node.js app to Azure Web App - photosharestorag
 
 on:
   push:
@@ -10,40 +10,56 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: windows-latest
     permissions:
-      id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python version
-        uses: actions/setup-python@v5
+      - name: Set up Node.js version
+        uses: actions/setup-node@v3
         with:
-          python-version: ''
+          node-version: '20.x'
 
-      - name: Install Python dependencies
+      - name: npm install, build, and test
         run: |
-          python -m venv env
-          .\\env\\Scripts\\activate
-          pip install -r requirements.txt
+          npm install
+          npm run build --if-present
+          npm run test --if-present
+      
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
+          path: .
 
-      - name: Zip the application files
-        run: Compress-Archive .\\* app.zip
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: node-app
       
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_BD35160B53B94B8AA892635ADD2C9905 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_531A2E3A7B3546CC8FE122069AD279EF }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_749608C32A87420E9DCC45C8894C5959 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_58A668A9C8414BBDB3A5D64866DD3957 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_347139E714714E309F0DCBA849ECAC08 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BCA0F4FB01674BE3A30138E8E573ABE5 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
         with:
           app-name: 'photosharestorag'
           slot-name: 'Production'
-          package: '.\\app.zip'
+          package: .
           
